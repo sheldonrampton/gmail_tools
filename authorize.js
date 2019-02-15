@@ -5,7 +5,9 @@ const Promise = require("bluebird");
 
 // If modifying these scopes, delete token.json.
 // const SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
-const SCOPES = ["https://www.googleapis.com/auth/gmail.modify"];
+const SCOPES = ["https://www.googleapis.com/auth/gmail.modify",
+"https://www.googleapis.com/auth/gmail.settings.basic"
+];
 const TOKEN_PATH = "token.json";
 
 /**
