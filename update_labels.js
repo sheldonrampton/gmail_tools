@@ -227,7 +227,7 @@ if (command == 'rename') {
     .then(auth => renameTag(auth, argv.to, argv.from, argv.name, argv.pattern, argv.replacement))
     .catch(err => console.log(err));
 } else if (command == 'show') {
-  console.log(`Showing matching labels.`);
+  // console.log(`Showing matching labels.`);
   const client = authorize.client()
     .then(auth => {
       if (argv.name) {

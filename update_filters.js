@@ -32,9 +32,10 @@ const query_option = {
   alias: 'q'
 };
 const add_options = {
-  describe: 'Filters to add.',
+  describe: 'Labels to add.',
   demand: false,
-  default: '',
+  type: 'array',
+  default: [],
   alias: 'a'
 };
 const remove_options = {
@@ -76,6 +77,8 @@ const argv = yargs
     from: from_option,
     subject: subject_option,
     query: query_option,
+    add: add_options,
+    remove: remove_options,
     check: check_option,
     verbose: verbose_option
   })
@@ -84,6 +87,8 @@ const argv = yargs
     from: from_option,
     subject: subject_option,
     query: query_option,
+    add: add_options,
+    remove: remove_options,
     check: check_option,
     verbose: verbose_option
   })
@@ -113,22 +118,33 @@ const fetchFilters = (auth) => {
   });
 };
 
-const fetchMatchingFilters = (auth, to, from, subject, query) => {
+// Feturns a list of filters that match specified criteria.
+// NOTE: For the sake of sanity, the array of filters are called "items"
+// in this function. This is to avoid confusion caused by the linguistic
+// similarity between filters (the objects defined by the Gmail API)
+// and the lodash _.filter() function.
+const fetchMatchingFilters = (auth, to, from, subject, query, add_label_ids) => {
   return fetchFilters(auth)
-    .then(filters => {
+    .then(items => {
       if (to) {
-        filters = _.filter(filters, filter => filter.criteria.to == to);
+        items = _.filter(items, item => item.criteria.to == to);
       }
       if (from) {
-        filters = _.filter(filters, filter => filter.criteria.from == from);
+        items = _.filter(items, item => item.criteria.from == from);
       }
       if (subject) {
-        filters = _.filter(filters, filter => filter.criteria.subject == subject);
+        items = _.filter(items, item => item.criteria.subject == subject);
       }
       if (query) {
-        filters = _.filter(filters, filter => filter.criteria.query == query);
+        items = _.filter(items, item => item.criteria.query == query);
       }
-      return filters;
+      if (_.size(add_label_ids)) {
+        items = _.reject(
+          items,
+          item => _.every(add_label_ids, label => !_.includes(item.action.addLabelIds, label))
+        );
+      }
+      return items;
   });
 };
 
@@ -160,6 +176,37 @@ const deleteFilter = (auth, filter) => {
     }
   })
 };
+
+const defineFilter = (criteria, add_label_ids, remove_label_ids) => {
+  return {
+    criteria: criteria,
+    action: {
+      addLabelIds: add_label_ids,
+      removeLabelIds: remove_label_ids
+    }
+  };
+};
+
+
+// Defines a filter with a single from address for criteria
+// and a single label ID to use for tagging emails from that
+// email address. The filter also removes emails from the inbox.
+const simpleDefineFilter = (from, add_label_id) => {
+  return {
+    criteria: {
+      from: from
+    },
+    action: {
+      addLabelIds: [
+        add_label_id
+      ],
+      removeLabelIds: [
+        "INBOX"
+      ]
+    }
+  };
+};
+
 
 const createFilter = (auth, filter) => {
   return new Promise((resolve, reject) => {
@@ -194,25 +241,38 @@ const readFilterList = (filename) => {
   });
 }
 
+const unprocessedFilterList = (filename, froms) => {
+  rows = readFilterList(filename);
+  unprocessed_rows = _.filter(
+    rows,
+    row => !_.includes(froms, row.from)
+  );
+
+  processed_rows = _.filter(
+    rows,
+    row => _.includes(froms, row.from)
+  );
+
+  console.log(`There are ${_.size(froms)} from addresses currently being filtered.`);
+  console.log(`There are ${_.size(rows)} from addresses in the file.`);
+  console.log(`There are ${_.size(unprocessed_rows)} rows that have not been successfully processed.`);
+  console.log(`There are ${_.size(processed_rows)} rows that have been successfully processed.`);
+
+  return unprocessed_rows;
+}
+
 if (command == 'show') {
   console.log(`Showing matching filters.`);
   const client = authorize.client()
-    .then(auth => fetchMatchingFilters(auth, argv.to, argv.from, argv.subject, argv.query))
-    .then(filters => console.log(JSON.stringify(filters, undefined, 2)))
-    .catch(err => console.log(err));
-}
-else if (command == 'apply') {
-  console.log(`Apply matching filters.`);
-  const client = authorize.client()
-    .then(auth => fetchMatchingFilters(auth, argv.to, argv.from, argv.subject, argv.query))
+    .then(auth => fetchMatchingFilters(auth, argv.to, argv.from, argv.subject, argv.query, argv.add))
     .then(filters => console.log(JSON.stringify(filters, undefined, 2)))
     .catch(err => console.log(err));
 }
 else if (command == 'remove') {
-  console.log(`Remove filters.`);
+  console.log(`Remove filter(s).`);
   const client = authorize.client()
     .then(auth => {
-      fetchMatchingFilters(auth, argv.to, argv.from, argv.subject, argv.query)
+      fetchMatchingFilters(auth, argv.to, argv.from, argv.subject, argv.query, argv.add)
       .then(filters => {
         var n = 1;
         _.each(filters, filter => {
@@ -232,95 +292,61 @@ else if (command == 'remove') {
 }
 else if (command == 'process') {
   console.log(`Process a file of filters.`);
-  var rows = readFilterList(argv.file);
   const client = authorize.client()
     .then(auth => {
-      var n = 1;
-      _.each(rows, row => {
-        _.delay(function(row) {
-          if (row.name) {
-            if (argv.verbose) {
-              console.log('Data row:');
-              console.log(JSON.stringify(row, undefined, 2));
-            }
-            labelFetcher.fetchLabelsNamed(auth, row.name)
-              .then(labels => {
-                if (argv.verbose) {
-                  console.log('Matching label:');
-                  console.log(JSON.stringify(labels, undefined, 2));
-                }
-                filter = {
-                  criteria: {
-                    from: row.from
-                  },
-                  action: {
-                    addLabelIds: [
-                      labels[0].id
-                    ],
-                    removeLabelIds: [
-                      "INBOX"
-                    ]
+      filteredFroms(auth)
+      .then(froms => {
+        var rows = unprocessedFilterList(argv.file, froms);
+        var n = 1;
+        _.each(rows, row => {
+          _.delay(function(row) {
+            if (row.name) {
+              if (argv.verbose) {
+                console.log('Data row:');
+                console.log(JSON.stringify(row, undefined, 2));
+              }
+              labelFetcher.fetchLabelsNamed(auth, row.name)
+                .then(labels => {
+                  if (argv.verbose) {
+                    console.log('Matching label:');
+                    console.log(JSON.stringify(labels, undefined, 2));
                   }
-                };
-                console.log(`Creating filter for emails from ${row.from}...`)
-                createFilter(auth, filter).catch(err => console.log(err));
-              })
-              .catch(err => console.log(err));
-          }
-        }, 5000 * n, row);
-        n += 1;
-      });
-    }).catch(err => console.log(err));
-}
-else if (command == 'process2') {
-  console.log(`Process a file of filters.`);
-  var rows = readFilterList(argv.file);
-  const client = authorize.client()
-    .then(auth => {
-      var n = 1;
-      _.each(rows, row => {
-        _.delay(function(row) {
-          if (row.name) {
-            if (argv.verbose) {
-              console.log('Data row:');
-              console.log(JSON.stringify(row, undefined, 2));
+                  filter = {
+                    criteria: {
+                      from: row.from
+                    },
+                    action: {
+                      addLabelIds: [
+                        labels[0].id
+                      ],
+                      removeLabelIds: [
+                        "INBOX"
+                      ]
+                    }
+                  };
+                  console.log(`Creating filter for emails from ${row.from}...`)
+                  createFilter(auth, filter).catch(err => console.log(err));
+                })
+                .catch(err => console.log(err));
             }
-            labelFetcher.fetchLabelsNamed(auth, row.name)
-              .then(labels => {
-                if (argv.verbose) {
-                  console.log('Matching label:');
-                  console.log(JSON.stringify(labels, undefined, 2));
-                }
-                filter = {
-                  criteria: {
-                    from: row.from
-                  },
-                  action: {
-                    addLabelIds: [
-                      labels[0].id
-                    ],
-                    removeLabelIds: [
-                      "INBOX"
-                    ]
-                  }
-                };
-                console.log(`Creating filter for emails from ${row.from}...`)
-                createFilter(auth, filter).catch(err => console.log(err));
-              })
-              .catch(err => console.log(err));
-          }
-        }, 5000 * n, row);
-        n += 1;
-      });
-    }).catch(err => console.log(err));
+          }, 10000 * n, row);
+          n += 1;
+        });
+      }).catch(err => console.log(err)); // Catches from unfilteredFroms
+   }).catch(err => console.log(err)); // Catches from auth
 }
 else if (command == 'froms') {
-  console.log(`Show the from addresses currently being filtered.`);
+  console.log(`Show from addresses currently being filtered.`);
   const client = authorize.client()
     .then(auth => filteredFroms(auth))
     .then(froms => {
       _.each(froms, from => {
         console.log(from);
-      })
-    }).catch(err => console.log(err));
+      });
+      var rows = readFilterList('rules.txt');
+      return _.filter(rows, row => !_.includes(froms, row.from));
+    })
+    .then(rows => console.log(JSON.stringify(rows, undefined, 2)))
+    .catch(err => console.log(err));
 }
+
