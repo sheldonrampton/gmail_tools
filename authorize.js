@@ -87,6 +87,14 @@ const client = () => {
     .then(content => authorize(JSON.parse(content)))
 }
 
+const performCommand = (func, description, ...theArgs) => {
+  console.log(description);
+  client()
+    .then(auth => func(auth, ...theArgs))
+    .catch(err => console.log(err));
+};
+
 module.exports = {
-  client
+  client,
+  performCommand
 };
